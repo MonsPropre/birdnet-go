@@ -152,3 +152,47 @@ func TestSourceDetectionTopic_SanitizeCollision(t *testing.T) {
 		SourceDetectionTopic(base, "hw:0/0"),
 		"distinct raw IDs that sanitize alike collide (known limitation; registry IDs never collide)")
 }
+
+func TestTemperatureTopics(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		baseTopic string
+		wantCmd   string
+		wantState string
+	}{
+		{
+			name:      "plain base",
+			baseTopic: "birdnet",
+			wantCmd:   "birdnet/temperature/set",
+			wantState: "birdnet/temperature/state",
+		},
+		{
+			name:      "nested base",
+			baseTopic: "home/garden/birdnet",
+			wantCmd:   "home/garden/birdnet/temperature/set",
+			wantState: "home/garden/birdnet/temperature/state",
+		},
+		{
+			name:      "trailing slash",
+			baseTopic: "birdnet/",
+			wantCmd:   "birdnet/temperature/set",
+			wantState: "birdnet/temperature/state",
+		},
+		{
+			name:      "repeated trailing slashes",
+			baseTopic: "birdnet///",
+			wantCmd:   "birdnet/temperature/set",
+			wantState: "birdnet/temperature/state",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.wantCmd, TemperatureCommandTopic(tt.baseTopic))
+			assert.Equal(t, tt.wantState, TemperatureStateTopic(tt.baseTopic))
+		})
+	}
+}

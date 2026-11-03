@@ -66,6 +66,9 @@ func durationToMillisUint(d time.Duration) uint {
 // to perform actions like publishing Home Assistant discovery messages.
 type OnConnectHandler func()
 
+// MessageHandler is the callback function invoked when an MQTT message arrives on a subscribed topic.
+type MessageHandler func(topic string, payload []byte)
+
 // Client defines the interface for MQTT client operations.
 type Client interface {
 	// Connect attempts to connect to the MQTT broker.
@@ -79,6 +82,14 @@ type Client interface {
 	// PublishWithRetain sends a message with explicit retain flag control.
 	// This is useful for discovery messages that must be retained regardless of client config.
 	PublishWithRetain(ctx context.Context, topic string, payload string, retain bool) error
+
+	// Subscribe registers a subscription to the specified topic with the given QoS.
+	// When a message arrives on this topic, handler is called.
+	// Subscriptions are remembered and automatically re-established on reconnect.
+	Subscribe(topic string, qos byte, handler MessageHandler) error
+
+	// Unsubscribe cancels a subscription to the specified topic.
+	Unsubscribe(topic string) error
 
 	// IsConnected returns true if the client is currently connected to the MQTT broker.
 	IsConnected() bool

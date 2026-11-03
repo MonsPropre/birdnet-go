@@ -118,6 +118,8 @@ func (m *MockMQTTClient) StartReconnectLoop() {
 
 func (m *MockMQTTClient) TestConnection(_ context.Context, _ chan<- mqtt.TestResult) {}
 func (m *MockMQTTClient) SetControlChannel(_ chan string)                            {}
+func (m *MockMQTTClient) Subscribe(_ string, _ byte, _ mqtt.MessageHandler) error   { return nil }
+func (m *MockMQTTClient) Unsubscribe(_ string) error                                 { return nil }
 
 // RegisterOnConnectHandler stores the handler so tests can invoke it directly.
 func (m *MockMQTTClient) RegisterOnConnectHandler(h mqtt.OnConnectHandler) {

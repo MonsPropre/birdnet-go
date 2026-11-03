@@ -30,6 +30,12 @@ const (
 	defaultQoS = 1 // QoS 1 ensures at least once delivery
 )
 
+// subscription tracks a registered MQTT topic subscription.
+type subscription struct {
+	qos     byte
+	handler MessageHandler
+}
+
 // client implements the Client interface.
 type client struct {
 	config            Config
@@ -41,6 +47,9 @@ type client struct {
 	metrics           *metrics.MQTTMetrics
 	controlChan       chan string        // Channel for control signals
 	onConnectHandlers []OnConnectHandler // Handlers called on successful connection
+	// Topic subscriptions remembered across reconnects
+	subscriptions map[string]subscription
+	subMu         sync.RWMutex
 	// Reconnection backoff and error suppression state
 	reconnectAttempts  int       // consecutive failed reconnect attempts for backoff calculation
 	lastConnErrMsg     string    // last connection error message for deduplication
@@ -119,6 +128,7 @@ func NewClient(settings *conf.Settings, observabilityMetrics *observability.Metr
 		reconnectStop: make(chan struct{}),
 		metrics:       observabilityMetrics.MQTT,
 		controlChan:   nil, // Will be set externally when needed
+		subscriptions: make(map[string]subscription),
 	}, nil
 }
 
@@ -348,6 +358,81 @@ func (c *client) Publish(ctx context.Context, topic, payload string) error {
 // This is useful for discovery messages that must be retained regardless of client config.
 func (c *client) PublishWithRetain(ctx context.Context, topic, payload string, retain bool) error {
 	return c.publishInternal(ctx, topic, payload, retain)
+}
+
+// Subscribe registers a subscription to the specified topic with the given QoS.
+// Subscriptions are remembered and automatically re-established on reconnect.
+func (c *client) Subscribe(topic string, qos byte, handler MessageHandler) error {
+	if topic == "" || handler == nil {
+		return errors.NewStd("topic and handler cannot be empty")
+	}
+
+	c.subMu.Lock()
+	if c.subscriptions == nil {
+		c.subscriptions = make(map[string]subscription)
+	}
+	c.subscriptions[topic] = subscription{
+		qos:     qos,
+		handler: handler,
+	}
+	c.subMu.Unlock()
+
+	c.mu.RLock()
+	internal := c.internalClient
+	c.mu.RUnlock()
+
+	if internal != nil && internal.IsConnected() {
+		token := internal.Subscribe(topic, qos, func(_ mqtt.Client, msg mqtt.Message) {
+			handler(msg.Topic(), msg.Payload())
+		})
+		if !token.WaitTimeout(c.config.PublishTimeout) {
+			return errors.Newf("subscribe timeout for topic %s", topic).
+				Component("mqtt").
+				Category(errors.CategoryNetwork).
+				Context("topic", topic).
+				Build()
+		}
+		if err := token.Error(); err != nil {
+			return errors.New(err).
+				Component("mqtt").
+				Category(errors.CategoryNetwork).
+				Context("topic", topic).
+				Context("operation", "subscribe").
+				Build()
+		}
+	}
+	return nil
+}
+
+// Unsubscribe cancels a subscription to the specified topic.
+func (c *client) Unsubscribe(topic string) error {
+	c.subMu.Lock()
+	delete(c.subscriptions, topic)
+	c.subMu.Unlock()
+
+	c.mu.RLock()
+	internal := c.internalClient
+	c.mu.RUnlock()
+
+	if internal != nil && internal.IsConnected() {
+		token := internal.Unsubscribe(topic)
+		if !token.WaitTimeout(c.config.PublishTimeout) {
+			return errors.Newf("unsubscribe timeout for topic %s", topic).
+				Component("mqtt").
+				Category(errors.CategoryNetwork).
+				Context("topic", topic).
+				Build()
+		}
+		if err := token.Error(); err != nil {
+			return errors.New(err).
+				Component("mqtt").
+				Category(errors.CategoryNetwork).
+				Context("topic", topic).
+				Context("operation", "unsubscribe").
+				Build()
+		}
+	}
+	return nil
 }
 
 // publishInternal is the common implementation for Publish and PublishWithRetain.
@@ -948,6 +1033,35 @@ func (c *client) onConnect(client mqtt.Client) {
 				logger.String("topic", c.config.LWT.Topic),
 				logger.Error(token.Error()))
 		}
+	}
+
+	// Restore active subscriptions on connect/reconnect
+	c.subMu.RLock()
+	type subEntry struct {
+		topic string
+		sub   subscription
+	}
+	subsToRestore := make([]subEntry, 0, len(c.subscriptions))
+	for topic, sub := range c.subscriptions {
+		subsToRestore = append(subsToRestore, subEntry{topic: topic, sub: sub})
+	}
+	c.subMu.RUnlock()
+
+	for _, item := range subsToRestore {
+		t, s := item.topic, item.sub
+		token := client.Subscribe(t, s.qos, func(_ mqtt.Client, msg mqtt.Message) {
+			s.handler(msg.Topic(), msg.Payload())
+		})
+		go func(topicName string, tok mqtt.Token) {
+			if !tok.WaitTimeout(c.config.ConnectTimeout) || tok.Error() != nil {
+				log.Warn("Failed to restore MQTT subscription on connect",
+					logger.String("topic", topicName),
+					logger.Error(tok.Error()))
+			} else {
+				log.Debug("Restored MQTT subscription on connect",
+					logger.String("topic", topicName))
+			}
+		}(t, token)
 	}
 
 	// Call registered OnConnect handlers

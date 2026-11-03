@@ -19,6 +19,9 @@ const (
 	// statusTopicSegment names the availability topic under the base topic. It
 	// carries the LWT payload and the Home Assistant bridge/availability state.
 	statusTopicSegment = "status"
+
+	// temperatureTopicSegment names the temperature topic segment under the base topic.
+	temperatureTopicSegment = "temperature"
 )
 
 // trimBaseTopic strips trailing slashes so joined topics never contain an
@@ -75,4 +78,16 @@ func SourceSoundLevelTopic(baseTopic, sourceID string) string {
 // topic here rather than concatenating "/status" independently.
 func StatusTopic(baseTopic string) string {
 	return trimBaseTopic(baseTopic) + "/" + statusTopicSegment
+}
+
+// TemperatureCommandTopic returns the topic Home Assistant publishes temperature updates to,
+// e.g. "birdnet/temperature/set".
+func TemperatureCommandTopic(baseTopic string) string {
+	return trimBaseTopic(baseTopic) + "/" + temperatureTopicSegment + "/set"
+}
+
+// TemperatureStateTopic returns the topic BirdNET-Go publishes current temperature state to,
+// e.g. "birdnet/temperature/state".
+func TemperatureStateTopic(baseTopic string) string {
+	return trimBaseTopic(baseTopic) + "/" + temperatureTopicSegment + "/state"
 }
